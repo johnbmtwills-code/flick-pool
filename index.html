@@ -70,6 +70,7 @@ button:focus-visible{outline:3px solid var(--brass);outline-offset:2px}
 .dot{width:16px;height:16px;border-radius:50%;box-shadow:inset -2px -3px 0 rgba(0,0,0,.25)}
 .dot.red{background:var(--red)}
 .dot.yellow{background:var(--yellow)}
+.dot.open{background:linear-gradient(90deg,var(--red) 50%,var(--yellow) 50%)}
 h1{
   margin:0;font-family:var(--display);font-weight:400;line-height:1;letter-spacing:.01em;
   font-size:clamp(34px,7vw,64px);color:var(--cream);text-wrap:balance;
@@ -131,9 +132,13 @@ const DISPLAY = tk('--display', "'Bowlby One',sans-serif");
 const LABEL = tk('--label', "'Barlow Semi Condensed',sans-serif");
 const BALLCOL = { red: COL.red, yellow: COL.yellow, black: COL.black, cue: COL.cue };
 const PIPCOL = { red: '#7a1b16', yellow: '#946d0c', black: '#d8d8de', cue: '#c4372c' };
-const VERSION = 'v1.2';
-const NAMES = ['Reds', 'Yellows'];
-const TYPES = ['red', 'yellow'];
+const VERSION = 'v1.3';
+const PER_COLOUR = 4;                    // four reds, four yellows and the black
+const colour = [null, null];             // set by the first ball potted on a legal shot
+const SEAT = ['Player 1', 'Player 2'];   // bottom edge, top edge
+const CNAME = { red: 'Reds', yellow: 'Yellows' };
+const other = t => t === 'red' ? 'yellow' : 'red';
+const name = p => colour[p] ? CNAME[colour[p]] : SEAT[p];
 
 /* ---------- tuning: fun over accurate ---------- */
 const TAU = Math.PI * 2;
@@ -332,18 +337,15 @@ function remaining(type) { let n = 0; for (const b of balls) if (b.alive && b.ty
 function newRack() {
   balls = [];
   const rowGap = R * Math.sqrt(3) + 0.6, colGap = 2 * R + 0.6, apexU = L * 0.70, midV = S / 2;
-  const cols = shuffle(['red', 'red', 'red', 'red', 'red', 'red', 'red', 'yellow', 'yellow', 'yellow', 'yellow', 'yellow', 'yellow', 'yellow']);
-  const slots = []; let ci = 0;
-  for (let i = 0; i < 15; i++) slots.push(i === 4 ? 'black' : cols[ci++]);
-  if (slots[10] === slots[14]) {
-    for (const i of [12, 13, 11, 8, 9, 7, 6]) {
-      if (slots[i] !== slots[14] && slots[i] !== 'black') { const t = slots[14]; slots[14] = slots[i]; slots[i] = t; break; }
+  const rows = [1, 2, 3, 2, 1];
+  const cols = shuffle(['red', 'red', 'red', 'red', 'yellow', 'yellow', 'yellow', 'yellow']);
+  let ci = 0;
+  rows.forEach((n, row) => {
+    for (let j = 0; j < n; j++) {
+      const type = row === 2 && j === 1 ? 'black' : cols[ci++];
+      balls.push(mkBall(type, apexU + row * rowGap, midV + (j - (n - 1) / 2) * colGap));
     }
-  }
-  let i = 0;
-  for (let row = 0; row < 5; row++) for (let j = 0; j <= row; j++) {
-    balls.push(mkBall(slots[i++], apexU + row * rowGap, midV + (j - row / 2) * colGap));
-  }
+  });
   cue = mkBall('cue', L * 0.24, S / 2);
   balls.push(cue);
 }
@@ -367,7 +369,7 @@ function placeCue(x, y) {
 
 /* ---------- physics ---------- */
 function startShot() {
-  shot = { pots: [], cuePotted: false, firstHit: null, startRem: [remaining('red'), remaining('yellow')], followT: 0, idle: 0, time: 0, cueTravel: 0, isBreak: breakPending };
+  shot = { pots: [], cuePotted: false, firstHit: null, startRem: { red: remaining('red'), yellow: remaining('yellow') }, followT: 0, idle: 0, time: 0, cueTravel: 0, isBreak: breakPending };
   breakPending = false;
   state = 'rolling'; inHand = false;
 }
@@ -462,21 +464,27 @@ function physicsStep(h) {
   if (shot && cue.alive) shot.cueTravel += Math.hypot(cue.x - cx0, cue.y - cy0);
 }
 
-/* ---------- rules: reds (bottom player) and yellows (top player), then the black ---------- */
+/* ---------- rules: open table until the first colour is potted, then clear your four and pot the black ---------- */
 function resolveShot() {
   const s = shot; shot = null;
-  const me = turn, opp = 1 - me, mine = TYPES[me];
+  const me = turn, opp = 1 - me;
+  let mine = colour[me];
   const blackPot = s.pots.some(b => b.type === 'black');
-  const own = s.pots.filter(b => b.type === mine).length;
-  const onBlack = s.startRem[me] === 0;
-  // you must hit one of your own colours first (or the black once your colours are cleared); the break is open
-  const wrongFirst = !!s.firstHit && !s.isBreak && (onBlack ? s.firstHit.type !== 'black' : s.firstHit.type !== mine);
+  const onBlack = !!mine && s.startRem[mine] === 0;
+  // first contact must be your own colour (or the black once you're on it); on an open table either colour will do;
+  // the break is free
+  let wrongFirst = false;
+  if (s.firstHit && !s.isBreak) {
+    const t = s.firstHit.type;
+    if (!mine) wrongFirst = t === 'black';
+    else wrongFirst = onBlack ? t !== 'black' : t !== mine;
+  }
   if (blackPot) {
     const legal = !s.cuePotted && onBlack && !wrongFirst;
     if (legal) endGame(me, 'Black down. Clean finish.');
-    else endGame(opp, s.cuePotted ? NAMES[me] + ' potted the black with the white.'
-      : !onBlack ? NAMES[me] + ' potted the black too early.'
-      : NAMES[me] + ' potted the black on a foul.');
+    else endGame(opp, s.cuePotted ? name(me) + ' potted the black with the white.'
+      : !onBlack ? name(me) + ' potted the black too early.'
+      : name(me) + ' potted the black on a foul.');
     return;
   }
   if (!s.firstHit && !s.cuePotted && s.pots.length === 0 && s.cueTravel < R * 6) {
@@ -492,8 +500,15 @@ function resolveShot() {
     return;
   }
   state = 'ready';
-  if (own > 0) flash(remaining(mine) === 0 ? 'On the black!' : own >= 3 ? 'Triple!' : own === 2 ? 'Double!' : 'Nice shot!', 'good');
-  else { turn = opp; flash(NAMES[opp] + ' to play', 'info'); }
+  let claimed = false;
+  if (!mine) {
+    const firstPot = s.pots.find(b => b.type === 'red' || b.type === 'yellow');
+    if (firstPot) { mine = colour[me] = firstPot.type; colour[opp] = other(mine); claimed = true; }
+  }
+  const own = mine ? s.pots.filter(b => b.type === mine).length : 0;
+  if (claimed) flash(SEAT[me] + ' takes ' + CNAME[mine], 'good');
+  else if (own > 0) flash(remaining(mine) === 0 ? 'On the black!' : own >= 3 ? 'Triple!' : own === 2 ? 'Double!' : 'Nice shot!', 'good');
+  else { turn = opp; flash(name(opp) + ' to play', 'info'); }
 }
 
 function endGame(w, reason) {
@@ -505,7 +520,8 @@ function startGame() {
   hideOverlay(); newRack();
   particles.length = 0; sinks.length = 0; shot = null; msg = null; inHand = false;
   turn = nextBreaker; nextBreaker = 1 - nextBreaker; state = 'ready'; breakPending = true;
-  flash(NAMES[turn] + ' to break', 'info'); keepAwake();
+  colour[0] = colour[1] = null;
+  flash(name(turn) + ' to break', 'info'); keepAwake();
 }
 
 function flash(text, tone) { msg = { text, tone: tone || 'info', t: 0, dur: text.length > 18 ? 2.1 : 1.7 }; }
@@ -650,20 +666,25 @@ function drawAim() {
 }
 
 function drawTray(p) {
-  const type = TYPES[p], remain = remaining(type);
+  const type = colour[p], remain = type ? remaining(type) : -1, N = PER_COLOUR + 1;
   const active = !overlayOpen && (state === 'ready' || state === 'rolling') && turn === p;
   const slotMax = WOOD * 0.34;
-  const gap = Math.min(slotMax * 2.5, (W - 2 * WOOD) * 0.5 / 8);
+  const gap = Math.min(slotMax * 2.5, (W - 2 * WOOD) * 0.5 / N);
   const sr = Math.min(slotMax, R * 0.95, gap * 0.47);
-  const rowW = gap * 8, ph = WOOD * 0.8, pw = rowW + gap * 0.7;
+  const rowW = gap * N, ph = WOOD * 0.8, pw = rowW + gap * 0.7;
   ctx.save();
   ctx.translate(W / 2, p === 0 ? H - WOOD / 2 : WOOD / 2);
   if (p === 1) ctx.rotate(Math.PI);
   rr(ctx, -pw / 2, -ph / 2, pw, ph, ph / 2); ctx.fillStyle = 'rgba(0,0,0,.3)'; ctx.fill();
   if (active) { ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(244,231,200,' + (0.6 + 0.3 * Math.sin(clock * 5)).toFixed(2) + ')'; ctx.stroke(); }
-  for (let i = 0; i < 8; i++) {
-    const x = -rowW / 2 + gap * (i + 0.5), isBlack = i === 7;
-    if (isBlack || i < remain) {
+  for (let i = 0; i < N; i++) {
+    const x = -rowW / 2 + gap * (i + 0.5), isBlack = i === N - 1;
+    if (!type && !isBlack) {
+      // open table: half-and-half placeholders
+      ctx.save(); ctx.beginPath(); ctx.arc(x, 0, sr * 0.78, 0, TAU); ctx.clip();
+      ctx.globalAlpha = 0.45; ctx.fillStyle = COL.red; ctx.fillRect(x - sr, -sr, sr, 2 * sr);
+      ctx.fillStyle = COL.yellow; ctx.fillRect(x, -sr, sr, 2 * sr); ctx.restore();
+    } else if (isBlack || i < remain) {
       drawBallSprite(isBlack ? 'black' : type, x, 0, sr, null, isBlack && remain > 0 ? 0.5 : 1);
       if (isBlack && remain === 0) {
         ctx.beginPath(); ctx.arc(x, 0, sr + 3 + 1.5 * Math.sin(clock * 6), 0, TAU);
@@ -676,9 +697,9 @@ function drawTray(p) {
   const fs = Math.max(11, Math.min(16, WOOD * 0.32));
   ctx.font = '700 ' + fs + 'px ' + LABEL; ctx.textBaseline = 'middle'; ctx.letterSpacing = '1.4px';
   ctx.fillStyle = active ? COL.cream : 'rgba(244,231,200,.6)';
-  ctx.textAlign = 'right'; ctx.fillText((NAMES[p] + ' · ' + wins[p]).toUpperCase(), -pw / 2 - 14, 1);
+  ctx.textAlign = 'right'; ctx.fillText((name(p) + ' · ' + wins[p]).toUpperCase(), -pw / 2 - 14, 1);
   let status = '';
-  if (state === 'ready' && turn === p && !overlayOpen) status = inHand ? 'Place the white' : (remain === 0 ? 'On the black' : 'Pull back and let go');
+  if (state === 'ready' && turn === p && !overlayOpen) status = inHand ? 'Place the white' : (remain === 0 ? 'On the black' : !type ? 'Open table' : 'Pull back and let go');
   else if (remain === 0 && state !== 'title') status = 'On the black';
   ctx.textAlign = 'left'; ctx.fillText(status.toUpperCase(), pw / 2 + 14, 1);
   ctx.restore();
@@ -787,11 +808,11 @@ document.addEventListener('touchmove', e => e.preventDefault(), { passive: false
 ['gesturestart', 'gesturechange', 'gestureend'].forEach(t => document.addEventListener(t, e => e.preventDefault()));
 
 /* ---------- overlay ---------- */
-const score = () => 'Frames: Reds ' + wins[0] + ', Yellows ' + wins[1];
+const score = () => 'Frames: Player 1 ' + wins[0] + ', Player 2 ' + wins[1];
 function halfHTML(who, mode, data) {
-  const badge = '<div class="badge"><span class="dot ' + TYPES[who] + '"></span>You’re ' + NAMES[who] + '</div>';
+  const badge = '<div class="badge"><span class="dot ' + (colour[who] || 'open') + '"></span>You’re ' + name(who) + '</div>';
   if (mode === 'title') {
-    return badge + '<h1>CataPOOLt</h1><p class="sub">One iPad, one fingertip each. Touch behind the white, pull back like a catapult and let go. Hit your own colour first, clear your seven, then pot the black.</p>' +
+    return badge + '<h1>CataPOOLt</h1><p class="sub">One iPad, one fingertip each. Touch behind the white, pull back like a catapult and let go. The first colour you pot is yours. Hit your own colour first, clear your four, then pot the black.</p>' +
       '<div class="btns"><button class="btn" data-act="start" type="button">Rack ’em</button></div>' +
       '<div class="ver">' + VERSION + '</div>';
   }
