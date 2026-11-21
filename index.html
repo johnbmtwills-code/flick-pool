@@ -131,7 +131,7 @@ const DISPLAY = tk('--display', "'Bowlby One',sans-serif");
 const LABEL = tk('--label', "'Barlow Semi Condensed',sans-serif");
 const BALLCOL = { red: COL.red, yellow: COL.yellow, black: COL.black, cue: COL.cue };
 const PIPCOL = { red: '#7a1b16', yellow: '#946d0c', black: '#d8d8de', cue: '#c4372c' };
-const VERSION = 'v1.0';
+const VERSION = 'v1.1';
 const NAMES = ['Reds', 'Yellows'];
 const TYPES = ['red', 'yellow'];
 
@@ -143,7 +143,8 @@ const DRAG_C = 105;       // constant drag (px/s^2): and then stop promptly
 const WALL_E = 0.9;       // lively cushions
 const BALL_E = 0.97;      // clacky collisions
 const MAX_V = 2700;       // top speed (px/s)
-const MIN_CLOSE = 50;     // finger closing speed that counts as a hit (px/s)
+const DEAD_PULL = 12;     // pull shorter than this (px) cancels the shot
+let MAX_PULL = 240;       // pull (px) for full power, set from screen size in layout()
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
 /* ---------- state ---------- */
@@ -152,7 +153,7 @@ let L = 0, S = 0, landscape = true, R = 16, FR = 22;
 let balls = [], cue = null, pockets = [];
 let state = 'title';            // title | ready | rolling | over
 let overlayOpen = false;
-let turn = 0, nextBreaker = 0, inHand = false;
+let turn = 0, nextBreaker = 0, inHand = false, breakPending = false;
 const wins = [0, 0];
 let shot = null, msg = null, shake = 0, bg = null, gloss = null, clock = 0, lastT = 0;
 const sprites = {};
@@ -183,6 +184,7 @@ function layout() {
   L = landscape ? PW : PH; S = landscape ? PH : PW;
   R = Math.max(11, Math.min(L, S) / 40);
   FR = Math.max(18, R * 1.15);
+  MAX_PULL = clamp(Math.min(W, H) * 0.3, 160, 320);
   pockets = [];
   const addP = (u, v, ou, ov2, cr, orad) => {
     const a = T(u, v), b = T(u + ou, v + ov2);
@@ -365,8 +367,24 @@ function placeCue(x, y) {
 
 /* ---------- physics ---------- */
 function startShot() {
-  shot = { pots: [], cuePotted: false, firstHit: null, startRem: [remaining('red'), remaining('yellow')], followT: 0.12, idle: 0, time: 0, cueTravel: 0 };
+  shot = { pots: [], cuePotted: false, firstHit: null, startRem: [remaining('red'), remaining('yellow')], followT: 0, idle: 0, time: 0, cueTravel: 0, isBreak: breakPending };
+  breakPending = false;
   state = 'rolling'; inHand = false;
+}
+
+/* ---------- catapult: touch behind the white to aim, pull further back to add power, let go to shoot ---------- */
+function aimInfo(f) {
+  const dx = cue.x - f.tx, dy = cue.y - f.ty, d = Math.hypot(dx, dy);
+  if (d < R * 0.8) return null;
+  const base = Math.max(f.d0, R * 1.6);
+  return { ux: dx / d, uy: dy / d, d, p: clamp((d - base) / MAX_PULL, 0, 1) };
+}
+function fire(f) {
+  const a = aimInfo(f);
+  if (!a || a.p * MAX_PULL < DEAD_PULL) return;      // barely stretched: treat as a cancel
+  const v = MAX_V * Math.pow(a.p, 1.3);
+  cue.vx = a.ux * v; cue.vy = a.uy * v;
+  startShot(); sfx.tap(v);
 }
 
 function pot(b, p) {
@@ -385,31 +403,7 @@ function ballHit(a, b, imp) {
 function wallHit(v) { if (v > 100) { sfx.thud(v); shake = Math.max(shake, Math.min(3, v / 900)); } }
 
 function physicsStep(h) {
-  const inShot = state === 'ready' || (state === 'rolling' && shot && shot.followT > 0);
   const cx0 = cue.x, cy0 = cue.y;
-  if (inShot && cue.alive) {
-    for (const f of fingers.values()) {
-      if (f.drag) continue;
-      const dx = cue.x - f.x, dy = cue.y - f.y, d = Math.hypot(dx, dy), minD = FR + R;
-      if (f.ignore) { if (d > minD + 8) f.ignore = false; continue; }
-      if (d >= minD) continue;
-      const fsp = Math.hypot(f.vx, f.vy);
-      let nx, ny;
-      if (d > 1e-3) { nx = dx / d; ny = dy / d; } else if (fsp > 1) { nx = f.vx / fsp; ny = f.vy / fsp; } else continue;
-      const rel = (f.vx - cue.vx) * nx + (f.vy - cue.vy) * ny;
-      if (rel <= MIN_CLOSE) continue;
-      // the ball goes where the finger was going, nudged toward the contact normal
-      let mx = (fsp > 1 ? f.vx / fsp : nx) * 0.7 + nx * 0.3, my = (fsp > 1 ? f.vy / fsp : ny) * 0.7 + ny * 0.3;
-      const ml = Math.hypot(mx, my) || 1; mx /= ml; my /= ml;
-      const v = MAX_V * Math.tanh((0.5 * rel + 0.5 * fsp) * 1.25 / 1800);
-      cue.x = f.x + nx * (minD + 0.5); cue.y = f.y + ny * (minD + 0.5);
-      if (v > Math.hypot(cue.vx, cue.vy)) {
-        const first = state === 'ready';
-        cue.vx = mx * v; cue.vy = my * v;
-        if (first) { startShot(); sfx.tap(v); }
-      }
-    }
-  }
 
   for (const b of balls) {
     if (!b.alive) continue;
@@ -474,19 +468,27 @@ function resolveShot() {
   const me = turn, opp = 1 - me, mine = TYPES[me];
   const blackPot = s.pots.some(b => b.type === 'black');
   const own = s.pots.filter(b => b.type === mine).length;
+  const onBlack = s.startRem[me] === 0;
+  // you must hit one of your own colours first (or the black once your colours are cleared); the break is open
+  const wrongFirst = !!s.firstHit && !s.isBreak && (onBlack ? s.firstHit.type !== 'black' : s.firstHit.type !== mine);
   if (blackPot) {
-    const legal = !s.cuePotted && s.startRem[me] === 0;
+    const legal = !s.cuePotted && onBlack && !wrongFirst;
     if (legal) endGame(me, 'Black down. Clean finish.');
-    else endGame(opp, s.cuePotted ? NAMES[me] + ' potted the black with the white.' : NAMES[me] + ' potted the black too early.');
+    else endGame(opp, s.cuePotted ? NAMES[me] + ' potted the black with the white.'
+      : !onBlack ? NAMES[me] + ' potted the black too early.'
+      : NAMES[me] + ' potted the black on a foul.');
     return;
   }
   if (!s.firstHit && !s.cuePotted && s.pots.length === 0 && s.cueTravel < R * 6) {
-    state = 'ready'; flash('Too soft, go again', 'info'); return;
+    breakPending = s.isBreak; state = 'ready'; flash('Too soft, go again', 'info'); return;
   }
-  if (s.cuePotted || !s.firstHit) {
+  if (s.cuePotted || !s.firstHit || wrongFirst) {
     turn = opp; inHand = true; state = 'ready';
     if (!cue.alive) { cue.alive = true; const p = T(L * 0.24, S / 2); placeCue(p.x, p.y); }
-    sfx.foul(); flash(s.cuePotted ? 'Scratch! Ball in hand' : 'No ball hit! Ball in hand', 'bad');
+    let why = 'No ball hit!';
+    if (s.cuePotted) why = 'Scratch!';
+    else if (wrongFirst) why = s.firstHit.type === 'black' ? 'Hit the black first!' : 'Wrong colour first!';
+    sfx.foul(); flash(why + ' Ball in hand', 'bad');
     return;
   }
   state = 'ready';
@@ -502,7 +504,7 @@ function endGame(w, reason) {
 function startGame() {
   hideOverlay(); newRack();
   particles.length = 0; sinks.length = 0; shot = null; msg = null; inHand = false;
-  turn = nextBreaker; nextBreaker = 1 - nextBreaker; state = 'ready';
+  turn = nextBreaker; nextBreaker = 1 - nextBreaker; state = 'ready'; breakPending = true;
   flash(NAMES[turn] + ' to break', 'info'); keepAwake();
 }
 
@@ -558,14 +560,14 @@ function rr(c, x, y, w, h, r) {
   c.arcTo(x, y + h, x, y, r); c.arcTo(x, y, x + w, y, r); c.closePath();
 }
 
-function castRay(ox, oy, dx, dy) {
+function castRay(ox, oy, dx, dy, skip) {
   let best = { t: 1e9, ball: null };
   if (dx > 1e-6) { const t = (PX + PW - R - ox) / dx; if (t > 0 && t < best.t) best = { t, ball: null }; }
   else if (dx < -1e-6) { const t = (PX + R - ox) / dx; if (t > 0 && t < best.t) best = { t, ball: null }; }
   if (dy > 1e-6) { const t = (PY + PH - R - oy) / dy; if (t > 0 && t < best.t) best = { t, ball: null }; }
   else if (dy < -1e-6) { const t = (PY + R - oy) / dy; if (t > 0 && t < best.t) best = { t, ball: null }; }
   for (const b of balls) {
-    if (!b.alive || b === cue) continue;
+    if (!b.alive || b === cue || b === skip) continue;
     const fx = b.x - ox, fy = b.y - oy, proj = fx * dx + fy * dy;
     if (proj <= 0) continue;
     const d2 = fx * fx + fy * fy - proj * proj;
@@ -576,24 +578,75 @@ function castRay(ox, oy, dx, dy) {
   return best;
 }
 
+function aimFinger() {
+  if (state !== 'ready' || !cue.alive || overlayOpen) return null;
+  for (const f of fingers.values()) if (f.aim) return f;
+  return null;
+}
+
+function arrow(x0, y0, ux, uy, len, col, w) {
+  const x1 = x0 + ux * len, y1 = y0 + uy * len, hs = Math.max(7, w * 3);
+  ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = w;
+  ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1 - ux * hs * 0.6, y1 - uy * hs * 0.6); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x1, y1);
+  ctx.lineTo(x1 - ux * hs - uy * hs * 0.55, y1 - uy * hs + ux * hs * 0.55);
+  ctx.lineTo(x1 - ux * hs + uy * hs * 0.55, y1 - uy * hs - ux * hs * 0.55);
+  ctx.closePath(); ctx.fill();
+}
+
 function drawAim() {
-  if (state !== 'ready' || inHand || !cue.alive) return;
-  for (const f of fingers.values()) {
-    if (f.drag) continue;
-    const dx = cue.x - f.x, dy = cue.y - f.y, d = Math.hypot(dx, dy);
-    if (d < FR + R + 4 || d > 420) continue;
-    let ux = dx / d, uy = dy / d;
-    const sp = Math.hypot(f.vx, f.vy);
-    if (sp > 260 && f.vx * dx + f.vy * dy > 0) { ux = f.vx / sp; uy = f.vy / sp; }
-    const hit = castRay(cue.x, cue.y, ux, uy), t = Math.min(hit.t, 900);
-    ctx.save();
-    ctx.setLineDash([3, 9]); ctx.lineCap = 'round'; ctx.lineWidth = 2.5; ctx.strokeStyle = 'rgba(255,255,255,.5)';
-    ctx.beginPath(); ctx.moveTo(cue.x + ux * R, cue.y + uy * R); ctx.lineTo(cue.x + ux * t, cue.y + uy * t); ctx.stroke();
-    ctx.setLineDash([]);
-    if (hit.ball) { ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(cue.x + ux * t, cue.y + uy * t, R, 0, TAU); ctx.stroke(); }
-    ctx.restore();
-    break;
+  const f = aimFinger(); if (!f) return;
+  const a = aimInfo(f); if (!a) return;
+  const { ux, uy, p } = a;
+  const hot = p * MAX_PULL >= DEAD_PULL;
+  ctx.save(); ctx.lineCap = 'round';
+
+  // the rubber: from the fingertip to the white, thinning and warming as it stretches
+  const band = 'rgb(' + Math.round(244 - 30 * p) + ',' + Math.round(231 - 150 * p) + ',' + Math.round(200 - 150 * p) + ')';
+  ctx.globalAlpha = 0.85; ctx.strokeStyle = band; ctx.lineWidth = Math.max(2, 7 - 5 * p);
+  const px = -uy, py = ux;
+  ctx.beginPath();
+  ctx.moveTo(cue.x + px * R * 0.9, cue.y + py * R * 0.9); ctx.lineTo(f.tx, f.ty);
+  ctx.lineTo(cue.x - px * R * 0.9, cue.y - py * R * 0.9); ctx.stroke();
+  ctx.globalAlpha = 1;
+
+  // power ring round the white
+  ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(0,0,0,.35)';
+  ctx.beginPath(); ctx.arc(cue.x, cue.y, R + 7, 0, TAU); ctx.stroke();
+  if (p > 0) {
+    ctx.strokeStyle = p > 0.85 ? '#ff7a5c' : COL.brass;
+    const a0 = Math.atan2(-uy, -ux);
+    ctx.beginPath(); ctx.arc(cue.x, cue.y, R + 7, a0 - Math.PI * p, a0 + Math.PI * p); ctx.stroke();
   }
+
+  // the cue ball's path to the first thing it meets
+  const hit = castRay(cue.x, cue.y, ux, uy), t = Math.min(hit.t, 1400);
+  ctx.globalAlpha = hot ? 1 : 0.55;
+  ctx.setLineDash([3, 9]); ctx.lineWidth = 2.5; ctx.strokeStyle = 'rgba(255,255,255,.6)';
+  ctx.beginPath(); ctx.moveTo(cue.x + ux * (R + 10), cue.y + uy * (R + 10)); ctx.lineTo(cue.x + ux * t, cue.y + uy * t); ctx.stroke();
+  ctx.setLineDash([]);
+  if (hit.ball) {
+    const gx = cue.x + ux * t, gy = cue.y + uy * t, b = hit.ball;
+    // ghost white where it makes contact
+    ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(255,255,255,.7)';
+    ctx.beginPath(); ctx.arc(gx, gy, R, 0, TAU); ctx.stroke();
+    // object ball heads off along the line of centres
+    const nx = (b.x - gx) / (2 * R), ny = (b.y - gy) / (2 * R);
+    const cut = ux * nx + uy * ny;                       // 1 = full ball, 0 = thinnest graze
+    const oh = castRay(b.x, b.y, nx, ny, b);
+    const olen = Math.min(oh.t, Math.max(R * 3.5, (90 + 230 * Math.max(p, 0.35)) * Math.max(0.5, cut)));
+    const col = b.type === 'red' ? '#ff8a7e' : b.type === 'yellow' ? '#ffe17a' : '#e6e6ee';
+    arrow(b.x + nx * (R + 3), b.y + ny * (R + 3), nx, ny, olen, col, 3.5);
+    // the white glances off at right angles to that line
+    let tx = ux - nx * cut, ty = uy - ny * cut; const tl = Math.hypot(tx, ty);
+    if (tl > 0.08) {
+      tx /= tl; ty /= tl;
+      ctx.globalAlpha *= 0.45; ctx.setLineDash([2, 7]); ctx.lineWidth = 2; ctx.strokeStyle = '#fff';
+      ctx.beginPath(); ctx.moveTo(gx, gy); ctx.lineTo(gx + tx * 70 * tl, gy + ty * 70 * tl); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+  ctx.restore();
 }
 
 function drawTray(p) {
@@ -625,7 +678,7 @@ function drawTray(p) {
   ctx.fillStyle = active ? COL.cream : 'rgba(244,231,200,.6)';
   ctx.textAlign = 'right'; ctx.fillText((NAMES[p] + ' · ' + wins[p]).toUpperCase(), -pw / 2 - 14, 1);
   let status = '';
-  if (state === 'ready' && turn === p && !overlayOpen) status = inHand ? 'Place the white' : (remain === 0 ? 'On the black' : 'Flick the white');
+  if (state === 'ready' && turn === p && !overlayOpen) status = inHand ? 'Place the white' : (remain === 0 ? 'On the black' : 'Pull back and let go');
   else if (remain === 0 && state !== 'title') status = 'On the black';
   ctx.textAlign = 'left'; ctx.fillText(status.toUpperCase(), pw / 2 + 14, 1);
   ctx.restore();
@@ -681,6 +734,7 @@ function draw() {
   ctx.globalAlpha = 1;
   ctx.restore();
   if (!overlayOpen) for (const f of fingers.values()) {
+    if (f.aim && state === 'ready') { ctx.beginPath(); ctx.arc(f.tx, f.ty, 9, 0, TAU); ctx.fillStyle = 'rgba(244,231,200,.85)'; ctx.fill(); continue; }
     ctx.beginPath(); ctx.arc(f.x, f.y, FR, 0, TAU); ctx.fillStyle = 'rgba(255,255,255,.08)'; ctx.fill();
     ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(255,255,255,.4)'; ctx.stroke();
   }
@@ -698,8 +752,9 @@ cv.addEventListener('pointerdown', e => {
   const f = { id: e.pointerId, x: p.x, y: p.y, tx: p.x, ty: p.y, sx: p.x, sy: p.y, vx: 0, vy: 0, evx: 0, evy: 0, lastEvT: now, samples: [{ t: e.timeStamp, x: p.x, y: p.y }], ignore: false, drag: false, dx: 0, dy: 0 };
   if (state === 'ready' && cue.alive) {
     const d = Math.hypot(cue.x - p.x, cue.y - p.y);
+    let aiming = false; for (const g of fingers.values()) if (g.aim) aiming = true;
     if (inHand && d < R + 38) { f.drag = true; f.dx = cue.x - p.x; f.dy = cue.y - p.y; }
-    else if (d < FR + R + 6) f.ignore = true;
+    else if (!aiming) { f.aim = true; f.d0 = d; }
   }
   fingers.set(e.pointerId, f);
   try { cv.setPointerCapture(e.pointerId); } catch (_) {}
@@ -723,6 +778,7 @@ function endPointer(e) {
   const f = fingers.get(e.pointerId); if (!f) return;
   if (f.drag && inHand && state === 'ready') inHand = false;   // letting go of the white confirms its place
   fingers.delete(e.pointerId);
+  if (f.aim && state === 'ready' && cue.alive && !overlayOpen && e.type === 'pointerup') fire(f);
 }
 cv.addEventListener('pointerup', endPointer);
 cv.addEventListener('pointercancel', endPointer);
@@ -735,7 +791,7 @@ const score = () => 'Frames: Reds ' + wins[0] + ', Yellows ' + wins[1];
 function halfHTML(who, mode, data) {
   const badge = '<div class="badge"><span class="dot ' + TYPES[who] + '"></span>You’re ' + NAMES[who] + '</div>';
   if (mode === 'title') {
-    return badge + '<h1>Flick Pool</h1><p class="sub">One iPad, one fingertip each. Flick the white, clear your seven, then pot the black.</p>' +
+    return badge + '<h1>Flick Pool</h1><p class="sub">One iPad, one fingertip each. Touch behind the white, pull back like a catapult and let go. Hit your own colour first, clear your seven, then pot the black.</p>' +
       '<div class="btns"><button class="btn" data-act="start" type="button">Rack ’em</button></div>' +
       '<div class="ver">' + VERSION + '</div>';
   }
