@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>Flick Pool</title>
+<title>CataPOOLt</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bowlby+One&family=Barlow+Semi+Condensed:wght@500;600;700&display=swap" rel="stylesheet">
@@ -102,7 +102,7 @@ p.sub{margin:0;max-width:34ch;font-size:clamp(16px,2.2vw,20px);line-height:1.35;
 <button id="menu" type="button" aria-label="Pause menu">
   <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="3" cy="8" r="1.6" fill="currentColor"/><circle cx="8" cy="8" r="1.6" fill="currentColor"/><circle cx="13" cy="8" r="1.6" fill="currentColor"/></svg>
 </button>
-<div id="overlay" role="dialog" aria-modal="true" aria-label="Flick Pool">
+<div id="overlay" role="dialog" aria-modal="true" aria-label="CataPOOLt">
   <div class="half flip" id="halfTop"></div>
   <div class="mid" id="mid"></div>
   <div class="half" id="halfBot"></div>
@@ -131,7 +131,7 @@ const DISPLAY = tk('--display', "'Bowlby One',sans-serif");
 const LABEL = tk('--label', "'Barlow Semi Condensed',sans-serif");
 const BALLCOL = { red: COL.red, yellow: COL.yellow, black: COL.black, cue: COL.cue };
 const PIPCOL = { red: '#7a1b16', yellow: '#946d0c', black: '#d8d8de', cue: '#c4372c' };
-const VERSION = 'v1.1';
+const VERSION = 'v1.2';
 const NAMES = ['Reds', 'Yellows'];
 const TYPES = ['red', 'yellow'];
 
@@ -791,7 +791,7 @@ const score = () => 'Frames: Reds ' + wins[0] + ', Yellows ' + wins[1];
 function halfHTML(who, mode, data) {
   const badge = '<div class="badge"><span class="dot ' + TYPES[who] + '"></span>You’re ' + NAMES[who] + '</div>';
   if (mode === 'title') {
-    return badge + '<h1>Flick Pool</h1><p class="sub">One iPad, one fingertip each. Touch behind the white, pull back like a catapult and let go. Hit your own colour first, clear your seven, then pot the black.</p>' +
+    return badge + '<h1>CataPOOLt</h1><p class="sub">One iPad, one fingertip each. Touch behind the white, pull back like a catapult and let go. Hit your own colour first, clear your seven, then pot the black.</p>' +
       '<div class="btns"><button class="btn" data-act="start" type="button">Rack ’em</button></div>' +
       '<div class="ver">' + VERSION + '</div>';
   }
